@@ -32,7 +32,8 @@ def change_password(body:PasswordChange,db:Session=Depends(get_db),u:User=Depend
 def list_tx(db:Session=Depends(get_db),u:User=Depends(current_user)):return db.scalars(select(Transaction).where(Transaction.user_id==u.id).order_by(Transaction.date.desc()).limit(200)).all()
 @router.post('/transactions',response_model=TransactionOut,status_code=201)
 def add_tx(body:TransactionCreate,db:Session=Depends(get_db),u:User=Depends(current_user)):
- try:t=Transaction(**body.model_dump(),transaction_type=TxType(body.transaction_type),user_id=u.id)
+ data=body.model_dump();raw_type=data.pop('transaction_type')
+ try:t=Transaction(**data,transaction_type=TxType(raw_type),user_id=u.id)
  except ValueError:raise HTTPException(422,'transaction_type must be income, expense or transfer')
  db.add(t);db.commit();db.refresh(t);return t
 @router.delete('/transactions/{tx_id}',status_code=204)

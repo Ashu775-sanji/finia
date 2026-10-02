@@ -3,6 +3,7 @@ from sqlalchemy import select,func
 from app.database.core import SessionLocal
 from app.models.entities import User,Transaction,Budget,Goal,TxType
 from app.security.auth import hash_password
+from app.config import settings
 
 def seed_demo_data():
     """Create fictional portfolio data. No record represents a real person or bank feed."""
@@ -10,7 +11,8 @@ def seed_demo_data():
     try:
         user=db.scalar(select(User).where(User.email=='demo@finguard.app'))
         if not user:
-            user=User(name='Demo User',email='demo@finguard.app',password_hash=hash_password('FinGuard@2026'),currency='INR',language='en')
+            if not settings.demo_password:return
+            user=User(name='Demo User',email='demo@finguard.app',password_hash=hash_password(settings.demo_password),currency='INR',language='en')
             db.add(user);db.flush()
         today=date.today()
         existing=db.scalar(select(func.count()).select_from(Transaction).where(Transaction.user_id==user.id)) or 0
