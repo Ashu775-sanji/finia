@@ -16,10 +16,10 @@ app.add_middleware(TrustedHostMiddleware,allowed_hosts=['*'] if settings.environ
 _limits=defaultdict(deque)
 @app.middleware('http')
 async def rate_limit(request:Request,call_next):
- if request.method=='POST' and request.url.path in {'/api/v1/ai/ask','/api/v1/scam/analyze','/api/v1/url/analyze','/api/v1/auth/login','/api/v1/auth/register','/api/v1/auth/change-password'}:
+ if request.method=='POST' and request.url.path in {'/api/v1/ai/ask','/api/v1/scam/analyze','/api/v1/url/analyze','/api/v1/transactions/upload','/api/v1/auth/login','/api/v1/auth/register','/api/v1/auth/change-password'}:
   key=f'{request.client.host if request.client else "unknown"}:{request.url.path}';now=time.time();q=_limits[key]
   while q and q[0]<now-60:q.popleft()
-  limit=10 if '/auth/' in request.url.path else 30
+  limit=10 if '/auth/' in request.url.path or request.url.path.endswith('/transactions/upload') else 30
   if len(q)>=limit:return JSONResponse({'detail':'Too many requests. Try again shortly.'},status_code=429)
   q.append(now)
  return await call_next(request)

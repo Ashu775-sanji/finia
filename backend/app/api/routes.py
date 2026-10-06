@@ -74,7 +74,14 @@ def add_goal(body:GoalCreate,db:Session=Depends(get_db),u:User=Depends(current_u
 @router.get('/goals')
 def goals(db:Session=Depends(get_db),u:User=Depends(current_user)):return db.scalars(select(Goal).where(Goal.user_id==u.id)).all()
 @router.get('/notifications')
-def notifications(u:User=Depends(current_user)):return [{'type':'security','message':'No critical threats detected'},{'type':'budget','message':'Dining budget is nearing its limit'}]
+def notifications(db:Session=Depends(get_db),u:User=Depends(current_user)):
+ rows=db.scalars(select(Alert).where(Alert.user_id==u.id).order_by(Alert.created_at.desc()).limit(50)).all()
+ return [{'id':x.id,'type':'security','title':x.title,'message':x.details,'risk_level':x.risk_level,'is_read':x.is_read,'created_at':x.created_at} for x in rows]
+
+@router.post('/notifications/mark-all-read',status_code=204)
+def mark_all_notifications_read(db:Session=Depends(get_db),u:User=Depends(current_user)):
+ for row in db.scalars(select(Alert).where(Alert.user_id==u.id,Alert.is_read==False)).all():row.is_read=True
+ db.commit()
 
 @router.get('/analytics/recurring')
 def recurring(db:Session=Depends(get_db),u:User=Depends(current_user)):
@@ -149,19 +156,46 @@ def url_analyze(body:URLRequest,u:User=Depends(current_user)):return {**analyze_
 @router.post('/transactions/upload')
 async def upload_transactions(file:UploadFile=File(...),db:Session=Depends(get_db),u:User=Depends(current_user)):
  if not file.filename or not file.filename.lower().endswith('.csv'):raise HTTPException(422,'Upload a CSV file')
+ if file.content_type and file.content_type.lower() not in {'text/csv','application/csv','application/vnd.ms-excel','text/plain','application/octet-stream'}:raise HTTPException(422,'Unsupported file type. Upload a CSV file')
  raw=await file.read(2_000_001)
  if len(raw)>2_000_000:raise HTTPException(413,'CSV must be 2 MB or smaller')
+ if not raw.strip():raise HTTPException(422,'The CSV file is empty')
  try:
-  reader=csv.DictReader(io.StringIO(raw.decode('utf-8-sig')));required={'date','amount','merchant','category','payment_method'}
-  if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):raise HTTPException(422,f'Missing required columns: {sorted(required-set(reader.fieldnames or []))}')
-  created=[]
-  for i,row in enumerate(reader):
-   if i>=1000:break
+  text=raw.decode('utf-8-sig')
+  reader=csv.DictReader(io.StringIO(text, newline=''))
+  normalize=lambda value:'_'.join(str(value or '').strip().lower().replace('-',' ').split())
+  original_headers=reader.fieldnames or []
+  header_map={name:normalize(name) for name in original_headers}
+  required={'date','amount','merchant','category','payment_method'}
+  normalized=set(header_map.values())
+  missing=required-normalized
+  if missing:raise HTTPException(422,f'Missing required columns: {sorted(missing)}')
+  parsed_rows=list(reader)
+  if not parsed_rows:raise HTTPException(422,'The CSV file contains headers but no transaction rows')
+  if len(parsed_rows)>1000:raise HTTPException(422,'CSV can contain at most 1,000 transaction rows')
+  def safe_text(value,max_length):
+   cleaned=' '.join(str(value or '').strip().split())[:max_length]
+   return f"'{cleaned}" if cleaned[:1] in {'=','+','-','@'} else cleaned
+  created=[];invalid=0;duplicates=0;seen=set()
+  for raw_row in parsed_rows:
+   row={header_map.get(key,normalize(key)):value for key,value in raw_row.items() if key is not None}
    try:
-    t=Transaction(user_id=u.id,date=date.fromisoformat(row['date']),amount=abs(float(row['amount'])),merchant=row['merchant'][:120],category=row['category'][:80],payment_method=row.get('payment_method','')[:50],location=row.get('location','')[:120],description=f"Imported reference: {row.get('transaction_id','')[:100]}",transaction_type=TxType.expense);db.add(t);created.append(t)
-   except (ValueError,TypeError):continue
-  db.commit();return {'imported':len(created),'skipped':max(0,(i+1 if 'i' in locals() else 0)-len(created)),'message':'Imported records are user-provided data, not live bank transactions.'}
+    merchant=safe_text(row.get('merchant'),120);category=safe_text(row.get('category'),80)
+    payment=safe_text(row.get('payment_method'),50);tx_date=date.fromisoformat(str(row.get('date','')).strip())
+    amount=abs(float(str(row.get('amount','')).replace(',','').strip()))
+    if not merchant or not category or not payment or amount<=0 or amount>1_000_000_000:raise ValueError
+    signature=(tx_date.isoformat(),round(amount,2),merchant.casefold(),category.casefold(),payment.casefold())
+    if signature in seen:duplicates+=1;continue
+    seen.add(signature)
+    reference=safe_text(row.get('transaction_id'),100)
+    t=Transaction(user_id=u.id,date=tx_date,amount=amount,merchant=merchant,category=category,payment_method=payment,location=safe_text(row.get('location'),120),description=f'Imported reference: {reference}' if reference else 'Imported from anonymized CSV',transaction_type=TxType.expense)
+    db.add(t);created.append(t)
+   except (ValueError,TypeError,OverflowError):invalid+=1
+  if not created:raise HTTPException(422,'No valid transaction rows were found in the CSV')
+  db.commit()
+  return {'imported':len(created),'skipped':invalid+duplicates,'invalid_rows':invalid,'duplicate_rows':duplicates,'message':'Imported records are user-provided sample/anonymized data, not live bank transactions.'}
  except UnicodeDecodeError:raise HTTPException(422,'CSV must use UTF-8 encoding')
+ except csv.Error:raise HTTPException(422,'The CSV file is invalid or malformed')
 
 @router.get('/transactions/anomalies')
 def transaction_anomalies(db:Session=Depends(get_db),u:User=Depends(current_user)):return scan(db,u)
