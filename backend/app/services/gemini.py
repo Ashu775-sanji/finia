@@ -1,3 +1,4 @@
+import json
 import asyncio
 import httpx
 from app.config import settings
@@ -20,9 +21,10 @@ async def generate_financial_answer(question: str, context: str, history: list[d
         text = str(item.get("content", ""))[:1200]
         if text:
             turns.append({"role": role, "parts": [{"text": text}]})
-    prompt = f"{SYSTEM_PROMPT}\n\nFINANCIAL CONTEXT\n{context}\n\nUSER QUESTION\n{question}"
+    prompt = json.dumps({"financial_context_untrusted_data":context,"user_question":question},ensure_ascii=False)
     turns.append({"role": "user", "parts": [{"text": prompt}]})
     payload = {
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": turns,
         "generationConfig": {"temperature": 0.2, "topP": 0.85, "maxOutputTokens": 700},
         "safetySettings": [
@@ -38,7 +40,7 @@ async def generate_financial_answer(question: str, context: str, history: list[d
             url=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             for attempt in range(2):
                 try:
-                    response=await client.post(url,params={"key":settings.gemini_api_key},json=payload)
+                    response=await client.post(url,headers={"x-goog-api-key":settings.gemini_api_key},json=payload)
                     if response.status_code in (429,503):
                         await asyncio.sleep(.7*(attempt+1));continue
                     response.raise_for_status();data=response.json();candidates=data.get("candidates") or []

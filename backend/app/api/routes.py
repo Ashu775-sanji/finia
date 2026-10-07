@@ -1,3 +1,5 @@
+from math import isfinite
+from app.security.input_safety import reject_secret_values
 from datetime import date
 from collections import defaultdict
 from fastapi import APIRouter,Depends,HTTPException
@@ -170,11 +172,15 @@ async def upload_transactions(file:UploadFile=File(...),db:Session=Depends(get_d
   normalized=set(header_map.values())
   missing=required-normalized
   if missing:raise HTTPException(422,f'Missing required columns: {sorted(missing)}')
-  parsed_rows=list(reader)
+  parsed_rows=[]
+  for parsed_row in reader:
+   parsed_rows.append(parsed_row)
+   if len(parsed_rows)>1000:raise HTTPException(422,'CSV can contain at most 1,000 transaction rows')
   if not parsed_rows:raise HTTPException(422,'The CSV file contains headers but no transaction rows')
   if len(parsed_rows)>1000:raise HTTPException(422,'CSV can contain at most 1,000 transaction rows')
   def safe_text(value,max_length):
    cleaned=' '.join(str(value or '').strip().split())[:max_length]
+   reject_secret_values(cleaned)
    return f"'{cleaned}" if cleaned[:1] in {'=','+','-','@'} else cleaned
   created=[];invalid=0;duplicates=0;seen=set()
   for raw_row in parsed_rows:
@@ -183,7 +189,7 @@ async def upload_transactions(file:UploadFile=File(...),db:Session=Depends(get_d
     merchant=safe_text(row.get('merchant'),120);category=safe_text(row.get('category'),80)
     payment=safe_text(row.get('payment_method'),50);tx_date=date.fromisoformat(str(row.get('date','')).strip())
     amount=abs(float(str(row.get('amount','')).replace(',','').strip()))
-    if not merchant or not category or not payment or amount<=0 or amount>1_000_000_000:raise ValueError
+    if not isfinite(amount) or not merchant or not category or not payment or amount<=0 or amount>1_000_000_000:raise ValueError
     signature=(tx_date.isoformat(),round(amount,2),merchant.casefold(),category.casefold(),payment.casefold())
     if signature in seen:duplicates+=1;continue
     seen.add(signature)

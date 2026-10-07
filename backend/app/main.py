@@ -1,5 +1,6 @@
 from fastapi import FastAPI,Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from collections import defaultdict,deque
 import time
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,10 @@ from app.database.seed import seed_demo_data
 Base.metadata.create_all(bind=engine)
 if settings.seed_demo:seed_demo_data()
 app=FastAPI(title=settings.app_name,version='1.0.0',docs_url='/docs' if settings.environment!='production' else None)
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request:Request,exc:RequestValidationError):
+ # Do not reflect passwords, OTPs or other submitted values in validation responses.
+ return JSONResponse({'detail':[{'type':x['type'],'loc':x['loc'],'msg':x['msg']} for x in exc.errors()]},status_code=422)
 app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.allowed_origins.split(',')],allow_credentials=True,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['*'] if settings.environment!='production' else [x.strip() for x in settings.allowed_hosts.split(',')])
 _limits=defaultdict(deque)
